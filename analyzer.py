@@ -27,7 +27,6 @@ from openpyxl import load_workbook
 
 from scraper import scrape_site
 from extractors import extract_all
-from llm_enricher import enrich
 
 # ---------------------------------------------------------------------------
 # Конфигурация
@@ -66,9 +65,6 @@ COL_MAP = {
     "ssl_valid":          29,   # AC
     "domain_age_years":   30,   # AD
     "founded_year":       31,   # AE
-    "aml_risk_score":     32,   # AF
-    "aml_risk_reasoning": 33,   # AG
-    "fraud_flags":        34,   # AH
 }
 
 TERMS_PATHS = [
@@ -239,7 +235,7 @@ def guess_platform_name(url: str) -> str:
 # Основная логика обработки одного сайта
 # ---------------------------------------------------------------------------
 
-def analyze_site(url: str, no_llm: bool = False) -> dict:
+def analyze_site(url: str) -> dict:
     """Анализирует один сайт, возвращает dict с атрибутами."""
     url = normalize_url(url)
     result = {"url": url}
@@ -276,16 +272,6 @@ def analyze_site(url: str, no_llm: bool = False) -> dict:
 
     # 6. Regex-экстракция
     attrs = extract_all(combined_text, site_data["status"], site_data["archive_url"])
-
-    # 6b. LLM-обогащение: заполняем пробелы + AML risk score (один вызов на сайт)
-    if not no_llm:
-        llm_data = enrich(attrs, combined_text)
-        for key, value in llm_data.items():
-            if key in ("aml_risk_score", "aml_risk_reasoning", "fraud_flags"):
-                attrs[key] = value
-            elif value is not None and (attrs.get(key) is None or attrs.get(key) == "other"):
-                attrs[key] = value
-
     result.update(attrs)
 
     # 7. AskGamblers (рейтинги, жалобы, скорость выплат, кол-во игр)
@@ -341,7 +327,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None, help="Максимум сайтов")
     parser.add_argument("--start", type=int, default=0, help="Начать с позиции N")
-    parser.add_argument("--no-llm", action="store_true", help="Пропустить LLM-обогащение (быстрый режим, без API ключа)")
     args = parser.parse_args()
 
     # Подготовка output файла — копируем только если не существует
@@ -365,7 +350,7 @@ def main():
     for i, (row_num, url) in enumerate(urls):
         print(f"[{i+1}/{len(urls)}] {url}")
         try:
-            data = analyze_site(url, no_llm=args.no_llm)
+            data = analyze_site(url)
             save_result(ws, row_num, data)
             wb.save(OUTPUT_FILE)
 
@@ -375,7 +360,7 @@ def main():
                 f"| country={data.get('company_reg_country')} "
                 f"| ssl={data.get('ssl_valid')} | age={data.get('domain_age_years') or '?'}y "
                 f"| crypto={data.get('supported_crypto', '-')} "
-                f"| risk={data.get('aml_risk_score', '-')}/10"
+                f"| defi={data.get('is_decentralized', '-')}"
             )
         except Exception as e:
             print(f"  ERROR: {e}")

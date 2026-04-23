@@ -2,5 +2,4 @@ httpx
 beautifulsoup4
 openpyxl
 python-whois
-anthropic
 pytest

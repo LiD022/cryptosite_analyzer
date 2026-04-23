@@ -1,8 +1,8 @@
 # Crypto Gambling Site Analyzer
 
-Automated pipeline that classifies crypto gambling platforms by AML compliance and fraud risk.
+Automated pipeline that classifies crypto gambling platforms by AML compliance and fraud risk using web scraping and regex-based extraction.
 
-Built as a test assignment for a crypto analyst role — demonstrates programmatic site scraping, regex-based data extraction from legal text, and a hybrid AI enrichment pipeline using Claude.
+Built as a test assignment for a crypto analyst role — demonstrates programmatic site scraping with graceful fallbacks, structured data extraction from legal text, and batch Excel output.
 
 ---
 
@@ -10,16 +10,13 @@ Built as a test assignment for a crypto analyst role — demonstrates programmat
 
 For each URL in the input spreadsheet, the pipeline runs four steps:
 
-1. **Scrape** — fetches the homepage and legal pages (`/terms`, `/about`, `/legal`, `/privacy`). If the site is unreachable, falls back to the nearest [web.archive.org](https://web.archive.org) snapshot automatically.
+1. **Scrape** — fetches the homepage and legal pages (`/terms`, `/about`, `/legal`, `/privacy`). If the site returns an error or is blocked (403/429/Cloudflare), falls back to the nearest [web.archive.org](https://web.archive.org) snapshot automatically.
 
 2. **Extract** — regex extractors pull 15+ structured fields from the raw page text: KYC/AML policies, license details, legal entity name, country of registration, supported cryptocurrencies, blockchain networks, payout speed, and more.
 
-3. **Enrich with AI** — a single [Claude Haiku](https://www.anthropic.com/claude) API call per site receives the regex output as context, fills in any fields the regex couldn't determine, and produces:
-   - `aml_risk_score` — integer 1–10 (10 = highest risk)
-   - `aml_risk_reasoning` — 2–3 sentence explanation of the score
-   - `fraud_flags` — list of specific red flags found on the site
+3. **Supplement** — pulls additional data from AskGamblers: player ratings, complaint counts, verified payout speed, year founded.
 
-4. **Supplement** — pulls additional data from AskGamblers: player ratings, complaint counts, verified payout speed.
+4. **Technical checks** — SSL certificate validity and domain age via WHOIS.
 
 Results are written row-by-row into `results/output.xlsx`, preserving the original spreadsheet formatting.
 
@@ -36,10 +33,10 @@ Results are written row-by-row into `results/output.xlsx`, preserving the origin
 | F | is_KYC | Regex — KYC required? (`y`/`n`) |
 | G | KYC_type | Regex — `KYC` / `OPTIONAL_KYC` / `NO_KYC` |
 | I | web_archive_url | Archive.org fallback URL |
-| N | legal_entity_name | Regex → AI fallback |
+| N | legal_entity_name | Regex — operating company name |
 | O | company_reg_number | Regex |
-| P | company_reg_country | Regex → AI fallback |
-| Q | license | Regex → AI fallback |
+| P | company_reg_country | Regex — country of registration |
+| Q | license | Regex — licensing authority and number |
 | R | safety_score | AskGamblers |
 | S | player_rating | AskGamblers |
 | T | complaints_total | AskGamblers |
@@ -54,9 +51,6 @@ Results are written row-by-row into `results/output.xlsx`, preserving the origin
 | AC | ssl_valid | SSL certificate check — `valid` / `invalid` / `expired` |
 | AD | domain_age_years | WHOIS lookup |
 | AE | founded_year | AskGamblers |
-| **AF** | **aml_risk_score** | **AI — 1 (low risk) to 10 (high risk)** |
-| **AG** | **aml_risk_reasoning** | **AI — explanation of the score** |
-| **AH** | **fraud_flags** | **AI — list of red flags found** |
 
 ---
 
@@ -70,18 +64,12 @@ cd cryptosite_analyzer
 pip install -r requirements.txt
 ```
 
-Set your Anthropic API key (required for AI enrichment):
-
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-```
-
 ---
 
 ## Usage
 
 ```bash
-# Full run — all sites with AI enrichment
+# Full run — all sites
 python analyzer.py
 
 # First 10 sites only (good for testing)
@@ -89,38 +77,27 @@ python analyzer.py --limit 10
 
 # Start from row 20 (useful for resuming an interrupted run)
 python analyzer.py --start 20
-
-# Fast mode — skip LLM, no API key needed
-python analyzer.py --no-llm
 ```
 
 Results are saved to `results/output.xlsx`.
 
 ---
 
-## Methodology
+## How it works
 
-### Why hybrid regex + LLM?
+### Scraping strategy
 
-Regex is fast, deterministic, and costs nothing. It reliably handles the majority of sites where legal text follows predictable patterns. The LLM (Claude Haiku) is called **once per site** as a single enrichment pass:
+Many crypto gambling sites use Cloudflare or other anti-bot protection. The scraper handles this in layers:
 
-- **Gap-filling:** the model receives already-extracted fields as context so it only works on what regex couldn't determine — no redundant work, minimal token usage
-- **Risk scoring:** produces a holistic AML/fraud assessment based on the full context of the site
+1. Try the live site with realistic browser headers
+2. On 403/429/timeout — query web.archive.org for the most recent snapshot
+3. Fetch the archived homepage and attempt `/terms` from the archive as well
 
-**Cost:** ~$0.001 per site. **Latency:** ~2 seconds per site added.
+This gives useful text even for sites that block automated requests or have gone offline.
 
-### How the AML risk score works
+### Extraction
 
-The model evaluates a combination of signals:
-
-| Signal | Low risk | High risk |
-|--------|----------|-----------|
-| License | MGA, UKGC, Isle of Man | Curaçao, none |
-| KYC | Mandatory full verification | Optional or absent |
-| Anonymity | Not promoted | Explicitly advertised |
-| Currencies | Fiat + crypto | Crypto-only |
-| Architecture | Centralized, regulated | DeFi, non-custodial |
-| Domain age | Established (5+ years) | New or no WHOIS data |
+Each field is extracted by a dedicated set of regex patterns tuned to gambling site legal text. Fields like `legal_entity_name`, `license`, and `company_reg_country` use patterns that distinguish actual registration data from generic country mentions.
 
 ### Pipeline flow
 
@@ -128,16 +105,13 @@ The model evaluates a combination of signals:
 Input Excel (URLs)
       │
       ▼
-  scraper.py          fetch homepage + /terms pages + archive.org fallback
+  scraper.py        live fetch → archive.org fallback on block/timeout
       │
       ▼
- extractors.py        regex: KYC, AML, license, legal entity, currencies, etc.
+ extractors.py      regex: KYC, AML, license, legal entity, currencies, etc.
       │
       ▼
- llm_enricher.py      Claude Haiku: fill gaps + aml_risk_score + fraud_flags
-      │
-      ▼
-  analyzer.py         AskGamblers data + SSL + WHOIS → write to Excel
+  analyzer.py       AskGamblers data + SSL + WHOIS → write to Excel
 ```
 
 ---
@@ -148,11 +122,9 @@ Input Excel (URLs)
 ├── analyzer.py                          Main pipeline orchestrator
 ├── scraper.py                           Web scraping with archive.org fallback
 ├── extractors.py                        15+ regex-based attribute extractors
-├── llm_enricher.py                      Claude API: gap-fill + AML risk scoring
 ├── requirements.txt
 ├── tests/
-│   ├── test_extractors.py               Unit tests for regex extractors (15 tests)
-│   └── test_llm_enricher.py             Mock-based tests for LLM enricher (3 tests)
+│   └── test_extractors.py               Unit tests for regex extractors (15 tests)
 └── Gembling_zadanie_Istomin_N.xlsx      Input dataset
 ```
 
