@@ -9,8 +9,8 @@ build/
 venv/
 env/
 
-# Output data
-results/
+# Output data — track results for review
+# results/
 
 # OS files
 .DS_Store
