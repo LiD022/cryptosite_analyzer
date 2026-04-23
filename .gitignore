@@ -1,0 +1,33 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Output data
+results/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+
+# IDE configurations
+.idea/
+.vscode/
+*.swp
+
+# Playwright leftovers
+.playwright-mcp/
+
+# Claude internals
+.claude/
+
+# Secrets
+.env
